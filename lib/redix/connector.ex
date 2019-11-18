@@ -159,11 +159,30 @@ defmodule Redix.Connector do
         :replica -> "slave"
       end
 
-    case sync_command(transport, server_socket, ["ROLE"], timeout) do
+    case sync_get_role(transport, server_socket, timeout) do
       {:ok, [^expected_role | _]} -> :ok
       {:ok, [role | _]} -> {:error, {:wrong_role, role}}
       {:error, _reason_or_redis_error} = error -> error
     end
+  end
+
+  # The ROLE command was introduced in Redis 2.8.12 - for older versions we can
+  # get the same information by calling "INFO replication" and pulling the role
+  # attribute from the result.
+  defp sync_get_role(transport, server_socket, timeout) do
+    with {:error, %Redix.Error{}} <- sync_command(transport, server_socket, ["ROLE"], timeout),
+         {:ok, resp} <- sync_command(transport, server_socket, ["INFO", "replication"], timeout),
+         {:ok, role} <- pluck_role_from_info_response(resp) do
+      {:ok, [role]}
+    end
+  end
+
+  defp pluck_role_from_info_response(resp) do
+    # "INFO replication" returns a bunch of lines, and we're interested into the "role:xxx" line.
+    Enum.find_value(String.split(resp), _default = {:error, :info_has_no_role_information}, fn
+      "role:" <> role -> {:ok, role}
+      _other -> nil
+    end)
   end
 
   defp format_host(opts) when is_list(opts) do
